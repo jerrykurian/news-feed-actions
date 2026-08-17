@@ -1,0 +1,68 @@
+{
+  "_doc": "Drafted by the Factory Profiler from the code in this repo's own runner. Every command listed was executed in that run; null means the gate does not exist here, not that it was skipped.",
+  "repo": "news-feed-actions",
+  "estate_role": "Standalone single-repo application: reads an RSS feed, scrapes each linked article, summarises and categorises it with the OpenAI API, and writes the results to dated CSV/JSON files under content/. No sibling repos are referenced anywhere in the codebase.",
+  "stack": "Python 3 (runner has 3.12.3), no packaging metadata — a flat set of top-level scripts run directly with `python <file>.py`. Dependencies are declared in requirements.txt: feedparser 6.0.8 (RSS parsing), beautifulsoup4 4.10.0 (HTML scraping), requests 2.26.0 (HTTP), and openai (unpinned — see gotchas). Standard library only for storage: json, csv, os, re, datetime.",
+  "branches": {
+    "default": "main",
+    "staging": null
+  },
+  "commands": {
+    "test": null,
+    "build": null,
+    "lint": null
+  },
+  "conventions": [
+    "Flat top-level modules, no package directory and no __init__.py. Modules import each other directly by filename with an alias, e.g. `import file_utils as util`, `import feed_reader as feed`.",
+    "All file and directory I/O goes through file_utils.py (file_exists, load_json, write_json, write_csv). Do not open files inline elsewhere — feed_reader.py and ai_process.py both route through it.",
+    "Output is written to a per-day folder `content/<YYYY-MM-DD>/`, created by ai_process.check_folder() with os.makedirs(..., exist_ok=True). Work products are feed.json, summary.csv and errors.json inside it.",
+    "Caching is done by existence check, not by expiry: a step tests `util.file_exists(path, name)` first and returns the stored file if present, otherwise fetches and writes it. Preserve this pattern when adding steps.",
+    "Errors are collected, not raised: network and API failures are appended to an `errors` list that is written to errors.json at the end of the run, and processing continues to the next article. extract_article_content returns None on a failed fetch rather than propagating.",
+    "Entry-point scripts guard execution with `if __name__ == \"__main__\": main()` (ai_process.py). New runnable scripts should do the same — extract_content.py does not, and that is a bug rather than the house style (see gotchas).",
+    "Indentation is inconsistent across the repo: ai_process.py, extract_content.py and file_utils.py use 4 spaces, feed_reader.py uses tabs throughout. Match the file you are editing; do not reindent a whole file as a drive-by change.",
+    "Imports are sometimes placed mid-file next to the code that uses them (file_utils.py imports json and csv partway down; ai_process.py imports datetime, json and re after the functions). This is existing style, not something to normalise in an unrelated PR."
+  ],
+  "review_checklist": [
+    "No API key, feed URL or other credential committed as a literal. ai_process.py line 6 currently hardcodes `openai.api_key = '<api key>'` — any change touching it must move to an environment variable, never substitute a real key.",
+    "OpenAI calls must use the installed SDK's API. The current code targets the removed 0.x interface (openai.Completion / openai.ChatCompletion / openai.error); new or edited call sites must not copy that pattern (see gotchas).",
+    "Article-scraping changes: `extract_article_content` is duplicated in extract_content.py and feed_reader.py. Extend or consolidate — do not add a third copy.",
+    "New file reads/writes go through file_utils.py rather than inline open() calls.",
+    "Anything writing under content/ must keep the `content/<YYYY-MM-DD>/` layout, since the existence checks that provide caching depend on those exact paths and filenames.",
+    "Network calls must stay inside functions. Module-level HTTP requests execute on import and make the module unusable as a library (extract_content.py does this today).",
+    "content/ is gitignored except content/sample.txt — verify no generated feed.json, summary.csv or errors.json is committed in a PR."
+  ],
+  "qa_notes": [
+    "There is no test suite and no test framework in this repo: no tests/ directory, no test_*.py or *_test.py files, no conftest.py, pytest.ini, tox.ini, setup.cfg or pyproject.toml. Verified by a repo-wide search, and `python -m pytest --version` fails with 'No module named pytest' after a clean install of requirements.txt.",
+    "pytest is not a declared dependency. Adding tests means adding the framework to requirements.txt (or a separate dev requirements file) as part of that change.",
+    "Set up the environment the way this profile was verified: `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`. That install succeeds on Python 3.12.",
+    "Everything of consequence in this codebase is I/O — RSS fetch, HTTP scrape, OpenAI call, filesystem write. Tests must mock requests.get, feedparser.parse and the OpenAI client; a test that makes a real network or API call is not acceptable here.",
+    "The pure, easily-tested logic is ai_process.extract_summary_info (regex parsing of 'Rating: <n> ; Summary: <text>') and the file_utils helpers. Start there.",
+    "For filesystem behaviour, point the content folder at a temp directory rather than writing into the real content/ tree during a test run.",
+    "There is no CI workflow that runs application tests — the only workflows present are factory-pipeline.yml and factory-branch-guard.yml. A PR's tests will only run if someone runs them."
+  ],
+  "gotchas": [
+    "requirements.txt pins `openai` with no version, so a clean install resolves to openai 3.1.0, which removed the API this code is written against. Verified in this run: `openai.Completion.create(...)` raises APIRemovedInV1 ('you tried to access openai.Completion, but this is no longer supported in openai>=1.0.0'), and `openai.error` raises AttributeError: module 'openai' has no attribute 'error' — which means the `except openai.error.OpenAIError` handler in ai_process.py itself raises when any exception reaches it. ai_process.py cannot complete a run on a fresh install. This is pre-existing and predates any factory delta: do not let an implementer or reviewer attribute it to their change. Fixing it is a real change (migrate to the 1.x+ client, or pin openai<1.0.0) and deserves its own issue.",
+    "Modules import cleanly (`import ai_process`, `import feed_reader`, `import file_utils` all succeed) because the broken OpenAI calls are only reached at runtime. A successful import proves nothing about whether a run works.",
+    "extract_content.py executes an HTTP request at module scope: importing it fetches https://example.com/article-link and prints the result. Verified — the import emits 'Error connecting to ... 404 Client Error' and then 'None'. It is leftover example code, imported by nothing; feed_reader.py carries its own copy of the same function. Do not import it as a utility.",
+    "ai_process.py line 98 references an undefined name `e` inside the `if summary_info is None:` branch (there is no exception bound at that point), so that path raises NameError instead of recording the error it intends to. Pre-existing; not introduced by any factory work.",
+    "ai_process.py line 6 hardcodes `openai.api_key = '<api key>'` — a placeholder, not a leaked secret, but the code has no environment-variable path for the key at all, so it cannot run unmodified.",
+    "feed_reader.py line 31 hardcodes the feed URL (https://rss.app/feeds/tY4l5k6Ggv1doN3i.xml). It is not configurable, so any change to which feed is read is a code change today.",
+    "This repo has no test, build or lint gate of any kind — all three are null because none exist, not because they were skipped. Nothing mechanical will catch a regression here, so review and manual verification carry the entire load.",
+    "content/* is gitignored (only content/sample.txt is tracked), so a run's output is deliberately local and will never appear in a PR diff.",
+    "feed_reader.py is tab-indented while the other three modules use 4 spaces. Mixing the two within a file is a Python syntax error — match the file being edited."
+  ],
+  "reuse_hotspots": [
+    "file_utils.py — all filesystem and serialisation helpers (file_exists, load_json, write_json, write_csv). Check here before writing any new I/O helper.",
+    "feed_reader.py — RSS parsing, article scraping (extract_article_content), de-duplication of entries by title, and the feed.json cache.",
+    "ai_process.py — OpenAI prompt construction and calling (call_api, categorize_title, summarize_content), the dated-folder helper (check_folder), and response parsing (extract_summary_info).",
+    "extract_content.py — a second, near-identical copy of extract_article_content; consolidate rather than adding a third."
+  ],
+  "deploy": {
+    "health_checks": [],
+    "notes": [
+      "There is no deployment: no Dockerfile, no packaging metadata, no deploy workflow and no service. The application is run by hand as a script (`python ai_process.py`) and writes to the local filesystem, so there is no running instance to health-check — health_checks is empty rather than populated with invented URLs.",
+      "There is no staging branch; main is the only long-lived branch, so there is no release train to assemble.",
+      "A real end-to-end run requires a valid OpenAI API key and outbound network access to the RSS feed and to each article's host. Neither is available in CI, so full-pipeline verification cannot be automated in this runner."
+    ]
+  }
+}
